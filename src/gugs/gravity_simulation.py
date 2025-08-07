@@ -1,12 +1,93 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from numba import njit, prange
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _calculate_forces_jit(positions, masses, active, width, height, softening, G, power_law, use_mond, a0):
+    n_particles = len(positions)
+    forces = np.zeros_like(positions)
+    
+    for i in prange(n_particles):
+        if not active[i]:
+            continue
+            
+        for j in range(i + 1, n_particles):
+            if not active[j]:
+                continue
+            
+            # Calculate distance vector
+            dr_x = positions[j, 0] - positions[i, 0]
+            dr_y = positions[j, 1] - positions[i, 1]
+            
+            # Apply periodic boundary conditions
+            dr_x = dr_x - width * np.round(dr_x / width)
+            dr_y = dr_y - height * np.round(dr_y / height)
+            
+            # Distance with softening
+            r2 = dr_x**2 + dr_y**2 + softening**2
+            r = np.sqrt(r2)
+            
+            # Calculate force magnitude based on power law
+            if use_mond:
+                # MOND modification for low accelerations
+                a_newton = G * masses[j] / r2
+                if a_newton < a0:
+                    # Deep MOND regime - simplified nu function
+                    nu_val = 0.5 * (1 + np.sqrt(1 + 4 * a0 / a_newton))
+                    nu_norm = nu_val / 1.618033988749895  # nu(1) precalculated
+                    F_mag = G * masses[i] * masses[j] / (nu_norm * r2)
+                else:
+                    # Newtonian regime
+                    F_mag = G * masses[i] * masses[j] / r2
+            else:
+                # General power law: F ~ r^d
+                F_mag = G * masses[i] * masses[j] * r**(power_law)
+            
+            # Force vector components
+            F_x = F_mag * dr_x / r
+            F_y = F_mag * dr_y / r
+            
+            # Apply equal and opposite forces
+            forces[i, 0] += F_x
+            forces[i, 1] += F_y
+            forces[j, 0] -= F_x
+            forces[j, 1] -= F_y
+            
+    return forces
+
+@njit(cache=True)
+def _check_collisions_jit(positions, velocities, masses, active, width, height, collision_radius):
+    n_particles = len(positions)
+    
+    for i in range(n_particles):
+        if not active[i]:
+            continue
+            
+        for j in range(i + 1, n_particles):
+            if not active[j]:
+                continue
+            
+            dr_x = positions[j, 0] - positions[i, 0]
+            dr_y = positions[j, 1] - positions[i, 1]
+            dr_x = dr_x - width * np.round(dr_x / width)
+            dr_y = dr_y - height * np.round(dr_y / height)
+            
+            if np.sqrt(dr_x**2 + dr_y**2) < collision_radius:
+                # Merge particles: conserve momentum and mass
+                total_mass = masses[i] + masses[j]
+                positions[i, 0] = (masses[i] * positions[i, 0] + masses[j] * positions[j, 0]) / total_mass
+                positions[i, 1] = (masses[i] * positions[i, 1] + masses[j] * positions[j, 1]) / total_mass
+                velocities[i, 0] = (masses[i] * velocities[i, 0] + masses[j] * velocities[j, 0]) / total_mass
+                velocities[i, 1] = (masses[i] * velocities[i, 1] + masses[j] * velocities[j, 1]) / total_mass
+                masses[i] = total_mass
+                active[j] = False
 
 class GravitySimulation:
     def __init__(self, 
-                 width=800, 
-                 height=600, 
-                 n_particles=100, 
+                 width=1e3, 
+                 height=1e3, 
+                 n_particles=1e2, 
                  power_law=-1.0, 
                  G=5.0, 
                  a0=1.0,
@@ -80,74 +161,18 @@ class GravitySimulation:
         
     def calculate_forces(self):
         """Calculate forces between all particle pairs."""
-        forces = np.zeros_like(self.positions)
-        
-        for i in range(self.n_particles):
-            if not self.active[i]:
-                continue
-                
-            for j in range(i + 1, self.n_particles):
-                if not self.active[j]:
-                    continue
-                
-                # Calculate distance vector
-                dr = self.positions[j] - self.positions[i]
-                
-                # Apply periodic boundary conditions
-                dr[0] = dr[0] - self.width * np.round(dr[0] / self.width)
-                dr[1] = dr[1] - self.height * np.round(dr[1] / self.height)
-                
-                # Distance with softening
-                r2 = np.sum(dr**2) + self.softening**2
-                r = np.sqrt(r2)
-                
-                # Calculate force magnitude based on power law
-                if self.use_mond:
-                    # MOND modification for low accelerations
-                    a_newton = self.G * self.masses[j] / r2
-                    if a_newton < self.a0:
-                        # Deep MOND regime
-                        F_mag = self.G * self.masses[i] * self.masses[j] / (self.nu_norm(self.a0 / a_newton) * r2)
-                    else:
-                        # Newtonian regime
-                        F_mag = self.G * self.masses[i] * self.masses[j] / r2
-                else:
-                    # General power law: F ~ r^d
-                    F_mag = self.G * self.masses[i] * self.masses[j] * r**(self.power_law)
-                
-                # Force vector
-                F_vec = F_mag * dr / r
-                
-                # Apply equal and opposite forces
-                forces[i] += F_vec
-                forces[j] -= F_vec
-                
-        return forces
+        return _calculate_forces_jit(
+            self.positions, self.masses, self.active,
+            self.width, self.height, self.softening,
+            self.G, self.power_law, self.use_mond, self.a0
+        )
     
     def check_collisions(self):
         """Check for particle collisions and merge them."""
-            
-        for i in range(self.n_particles):
-            if not self.active[i]:
-                continue
-                
-            for j in range(i + 1, self.n_particles):
-                if not self.active[j]:
-                    continue
-                
-                dr = self.positions[j] - self.positions[i]
-                dr[0] = dr[0] - self.width * np.round(dr[0] / self.width)
-                dr[1] = dr[1] - self.height * np.round(dr[1] / self.height)
-                
-                if np.sqrt(np.sum(dr**2)) < self.collision_radius:
-                    # Merge particles: conserve momentum and mass
-                    total_mass = self.masses[i] + self.masses[j]
-                    self.positions[i] = (self.masses[i] * self.positions[i] + 
-                                       self.masses[j] * self.positions[j]) / total_mass
-                    self.velocities[i] = (self.masses[i] * self.velocities[i] + 
-                                        self.masses[j] * self.velocities[j]) / total_mass
-                    self.masses[i] = total_mass
-                    self.active[j] = False
+        _check_collisions_jit(
+            self.positions, self.velocities, self.masses, self.active,
+            self.width, self.height, self.collision_radius
+        )
     
     def update(self):
         """Update particle positions using leapfrog integration."""
