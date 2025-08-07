@@ -1,10 +1,7 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from matplotlib.animation import PillowWriter
-from matplotlib import cm
 from PIL import Image, ImageDraw, ImageFont
-from .gravity_simulation import GravitySimulation
+import imageio
+from .sim import Sim
 
 
 class GUGS:
@@ -15,15 +12,15 @@ class GUGS:
                  height=600, 
                  n_particles=500,
                  power_law=-1.0,
-                 G=5.0,
+                 G=3.0,
                  a0=1.0,
                  softening=0.5,
-                 dt=0.01,
+                 dt=0.005,
                  simulation_speed=1.0,
                  gif_duration=10.0,
                  fps=30):
         """
-        Initialize GUGS (Github Username Gravity Simulation).
+        Initialize GUGS.
         
         Parameters:
         - text: Text to display using particles
@@ -50,7 +47,7 @@ class GUGS:
         positions = self._create_exact_text_pattern(text, fill_rate)
         
         # Initialize the gravity simulation
-        self.sim = GravitySimulation(
+        self.sim = Sim(
             width=width,
             height=height,
             n_particles=n_particles,
@@ -138,9 +135,8 @@ class GUGS:
             self.n = actual_n
             self.sim.n_particles = actual_n
         
-        # Convert to x,y coordinates (swap indices and flip y-axis)
+        # Convert to x,y coordinates (swap indices)
         positions = pixel_positions[:, [1, 0]].astype(np.float32)
-        positions[:, 1] = self.h - positions[:, 1]  # Flip y-axis to correct orientation
         
         return positions
     
@@ -157,8 +153,118 @@ class GUGS:
             
         return positions
     
+    def mass_to_color(self, mass, max_mass):
+        """Convert mass to RGB color using spring colormap."""
+        # Normalize mass to [0, 1]
+        norm = mass / max_mass
+        # Spring colormap: magenta (1,0,1) -> yellow (1,1,0)
+        r = 1.0
+        g = norm
+        b = 1.0 - norm
+        return tuple(int(c * 255) for c in [r, g, b])
+    
+    def render_frame_pil(self, positions, masses, width=None, height=None):
+        """Render a frame using PIL for faster performance.
+        
+        Parameters:
+        - positions: Array of particle positions
+        - masses: Array of particle masses
+        - width, height: Canvas dimensions (uses self.w, self.h if not provided)
+        """
+        if width is None:
+            width = self.w
+        if height is None:
+            height = self.h
+            
+        # Create image with dark background
+        img = Image.new('RGB', (width, height), '#0B0C1A')
+        draw = ImageDraw.Draw(img)
+        
+        # Draw particles
+        max_mass = np.max(masses) if len(masses) > 0 else 1.0
+        # Get particle radii from simulation (single source of truth)
+        radii = self.sim.get_particle_radii(masses)
+        for pos, mass, radius in zip(positions, masses, radii):
+            # Convert to integer for drawing
+            radius = int(radius)
+            
+            # Get color from spring colormap
+            color = self.mass_to_color(mass, max_mass)
+            
+            # Draw particle as filled circle
+            x, y = int(pos[0]), int(pos[1])
+            draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
+                        fill=color, outline=None)
+        
+        return img
+    
+    def pre_simulate_trajectory(self, n_frames, steps_per_frame=1, verbose=True):
+        """Pre-simulate the entire trajectory.
+        
+        Parameters:
+        - n_frames: Number of frames to generate
+        - steps_per_frame: Simulation steps per frame
+        - verbose: Print progress
+        
+        Returns:
+        - trajectory: List of states for each frame
+        """
+        total_steps = n_frames * steps_per_frame
+        
+        if verbose:
+            print(f"Pre-simulating {total_steps} steps ({n_frames} frames)...")
+        
+        def progress_callback(step, state):
+            if verbose and step % (10 * steps_per_frame) == 0:
+                frame = step // steps_per_frame
+                active_count = np.sum(self.sim.active)
+                print(f"Frame {frame}/{n_frames} - Active particles: {active_count}")
+        
+        # Run pre-simulation with force caching
+        trajectory_raw = self.sim.pre_simulate(
+            total_steps, 
+            fields=['positions', 'masses'],
+            callback=progress_callback if verbose else None,
+            use_force_cache=True
+        )
+        
+        # Sample frames from trajectory
+        trajectory = [trajectory_raw[i * steps_per_frame] 
+                     for i in range(n_frames)]
+        
+        if verbose:
+            print("Pre-simulation complete!")
+        
+        return trajectory
+    
+    def generate_gif_from_trajectory(self, trajectory, filename="simulation.gif"):
+        """Generate GIF from pre-computed trajectory.
+        
+        Parameters:
+        - trajectory: List of states from pre_simulate_trajectory
+        - filename: Output filename
+        """
+        n_frames = len(trajectory)
+        print(f"Generating GIF with {n_frames} frames using PIL...")
+        
+        # Use imageio with PIL rendering
+        with imageio.get_writer(filename, mode='I', fps=self.fps) as writer:
+            for i, state in enumerate(trajectory):
+                # Render frame with PIL
+                img = self.render_frame_pil(state['positions'], state['masses'])
+                writer.append_data(np.array(img))
+                
+                if i % 10 == 0:
+                    print(f"Rendered frame {i}/{n_frames}")
+        
+        print(f"GIF saved to {filename}!")
+    
     def generate_gif(self, filename="simulation.gif"):
-        """Generate a GIF of the simulation"""
+        """Generate a GIF of the simulation.
+        
+        Parameters:
+        - filename: Output filename
+        """
         # Calculate number of frames
         n_frames = int(self.gif_duration * self.fps)
         steps_per_frame = max(1, int(1.0 / (self.fps * self.sim.dt)))
@@ -168,91 +274,10 @@ class GUGS:
         print(f"Steps per frame: {steps_per_frame}")
         print(f"Total simulation time: {n_frames * steps_per_frame * self.sim.dt:.2f} units")
         
-        # Set up the figure with no padding
-        # Calculate figure size in inches based on desired pixel dimensions
-        dpi = 100
-        fig_width = self.w / dpi
-        fig_height = self.h / dpi
+        # Pre-simulate trajectory
+        trajectory = self.pre_simulate_trajectory(n_frames, steps_per_frame)
         
-        fig = plt.figure(figsize=(fig_width, fig_height), dpi=dpi, facecolor='#0B0C1A')
-        ax = fig.add_axes([0, 0, 1, 1])  # Full figure, no margins
+        # Generate GIF from trajectory
+        self.generate_gif_from_trajectory(trajectory, filename)
         
-        ax.set_xlim(0, self.w)
-        ax.set_ylim(0, self.h)
-        ax.set_aspect('equal')
-        ax.set_facecolor('#0B0C1A')  # Very dark blue background
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.axis('off')  # Turn off axis completely
-        
-        # Create scatter plot with plasma colormap
-        scatter = ax.scatter([], [], c=[], s=[], edgecolors='none', cmap='spring', vmin=0, vmax=self.total_mass)
-        
-        def init():
-            return scatter,
-        
-        def animate(frame):
-            # Update simulation multiple times per frame for smoother motion
-            for _ in range(steps_per_frame):
-                self.sim.update()
-            
-            # Get active particles
-            active_positions = self.sim.positions[self.sim.active]
-            active_masses = self.sim.masses[self.sim.active]
-            
-            # Update scatter plot
-            scatter.set_offsets(active_positions)
-            scatter.set_array(active_masses)  # Color based on mass
-            scatter.set_sizes(20 * np.sqrt(np.abs(active_masses)))  # Size based on mass
-            
-            # Log progress
-            if frame % 10 == 0:
-                print(f"Frame {frame}/{n_frames} - Active particles: {np.sum(self.sim.active)}")
-            
-            return scatter,
-        
-        # Create animation
-        anim = FuncAnimation(fig, animate, init_func=init,
-                           frames=n_frames, interval=1000/self.fps, blit=True)
-        
-        # Save as GIF
-        print(f"Saving GIF to {filename}...")
-        writer = PillowWriter(fps=self.fps)
-        anim.save(filename, writer=writer)
-        plt.close(fig)
-        
-        print("GIF saved successfully!")
-        
-        return anim
-
-
-# Example usage
-if __name__ == "__main__":
-    import sys
-    
-    # Get username from command line argument or use default
-    if len(sys.argv) > 1:
-        username = sys.argv[1]
-    else:
-        username = "GUGS"
-        print(f"No username provided. Using default: {username}")
-        print("Usage: python gugs.py <username>")
-    
-    # Create GUGS simulation
-    gugs = GUGS(
-        text=username,
-        width=800,
-        height=600,
-        n_particles=200,
-        power_law=-1.0,
-        G=10.0,
-        dt=0.01,
-        simulation_speed=2.0,
-        gif_duration=20.0,
-        fps=10
-    )
-    
-    # Generate GIF
-    output_filename = "current.gif"
-    gugs.generate_gif(output_filename)
-    print(f"Generated: {output_filename}")
+        return trajectory

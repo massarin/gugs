@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 from numba import njit, prange
 
 @njit(parallel=True, fastmath=True, cache=True)
@@ -57,7 +55,7 @@ def _calculate_forces_jit(positions, masses, active, width, height, softening, G
     return forces
 
 @njit(cache=True)
-def _check_collisions_jit(positions, velocities, masses, active, width, height, collision_radius):
+def _check_collisions_jit(positions, velocities, masses, active, width, height, collision_radiuses):
     n_particles = len(positions)
     
     for i in range(n_particles):
@@ -73,7 +71,7 @@ def _check_collisions_jit(positions, velocities, masses, active, width, height, 
             dr_x = dr_x - width * np.round(dr_x / width)
             dr_y = dr_y - height * np.round(dr_y / height)
             
-            if np.sqrt(dr_x**2 + dr_y**2) < collision_radius:
+            if np.sqrt(dr_x**2 + dr_y**2) < (collision_radiuses[i, 0] + collision_radiuses[j, 0]):
                 # Merge particles: conserve momentum and mass
                 total_mass = masses[i] + masses[j]
                 positions[i, 0] = (masses[i] * positions[i, 0] + masses[j] * positions[j, 0]) / total_mass
@@ -83,7 +81,7 @@ def _check_collisions_jit(positions, velocities, masses, active, width, height, 
                 masses[i] = total_mass
                 active[j] = False
 
-class GravitySimulation:
+class Sim:
     def __init__(self, 
                  width=1e3, 
                  height=1e3, 
@@ -111,7 +109,6 @@ class GravitySimulation:
         self.width = width
         self.height = height
         self.scale = (self.width + self.height) / 2 / 100
-        self.collision_radius = self.scale
         self.n_particles = n_particles
         self.power_law = power_law
         self.G = G
@@ -167,17 +164,41 @@ class GravitySimulation:
             self.G, self.power_law, self.use_mond, self.a0
         )
     
+    def get_particle_radii(self, masses=None):
+        """Calculate visual radius for each particle based on its mass.
+        
+        Parameters:
+        - masses: Optional mass array, uses self.masses if not provided
+        
+        Returns:
+        - Array of visual radii for rendering
+        """
+        if masses is None:
+            masses = self.masses
+        base_size = (self.width + self.height) / 2 * 0.005
+        return np.maximum(1, np.sqrt(np.abs(masses)) * base_size)
+    
     def check_collisions(self):
         """Check for particle collisions and merge them."""
+        # Get visual radii and scale down by 0.9 for collision detection
+        visual_radii = self.get_particle_radii()
+        collision_radiuses = (0.33 * visual_radii).reshape(-1, 1)
         _check_collisions_jit(
             self.positions, self.velocities, self.masses, self.active,
-            self.width, self.height, self.collision_radius
+            self.width, self.height, collision_radiuses
         )
     
-    def update(self):
-        """Update particle positions using leapfrog integration."""
-        # Calculate forces
-        forces = self.calculate_forces()
+    def update(self, cached_forces=None):
+        """Update particle positions using leapfrog integration.
+        
+        Parameters:
+        - cached_forces: Optional pre-computed forces to use for first half-step
+        """
+        # Use cached forces or calculate new ones
+        if cached_forces is None:
+            forces = self.calculate_forces()
+        else:
+            forces = cached_forces
         
         # Update velocities (half step)
         accelerations = forces / self.masses[:, np.newaxis]
@@ -191,15 +212,18 @@ class GravitySimulation:
         self.positions %= np.array([self.width, self.height])
         
         # Recalculate forces at new positions
-        forces = self.calculate_forces()
+        forces_new = self.calculate_forces()
         
         # Update velocities (second half step)
-        accelerations = forces / self.masses[:, np.newaxis]
+        accelerations = forces_new / self.masses[:, np.newaxis]
         accelerations[~self.active] = 0
         self.velocities += accelerations * self.dt * 0.5
         
         # Check for collisions
         self.check_collisions()
+        
+        # Return new forces for potential caching in next step
+        return forces_new
     
     def get_kinetic_energy(self):
         """Calculate total kinetic energy."""
@@ -228,57 +252,63 @@ class GravitySimulation:
                     U -= self.G * self.masses[i] * self.masses[j] * r**(self.power_law + 1) / (self.power_law + 1)
         
         return U
+    
+    def get_state(self, fields=None):
+        """Get current simulation state.
+        
+        Parameters:
+        - fields: List of fields to include. If None, includes all.
+                 Options: 'positions', 'velocities', 'masses', 'active'
+        """
+        if fields is None:
+            return {
+                'positions': self.positions.copy(),
+                'velocities': self.velocities.copy(),
+                'masses': self.masses.copy(),
+                'active': self.active.copy()
+            }
+        
+        state = {}
+        if 'positions' in fields:
+            state['positions'] = self.positions[self.active].copy()
+        if 'velocities' in fields:
+            state['velocities'] = self.velocities[self.active].copy()
+        if 'masses' in fields:
+            state['masses'] = self.masses[self.active].copy()
+        if 'active' in fields:
+            state['active'] = self.active.copy()
+        return state
+    
+    def pre_simulate(self, n_steps, fields=None, callback=None, use_force_cache=True):
+        """Pre-simulate n_steps and return trajectory.
+        
+        Parameters:
+        - n_steps: Number of steps to simulate
+        - fields: Fields to store per frame (default: positions and masses)
+        - callback: Optional function called each step with (step, state)
+        - use_force_cache: Whether to cache forces between steps
+        """
+        if fields is None:
+            fields = ['positions', 'masses']
+        
+        trajectory = []
+        cached_forces = None
+        
+        for step in range(n_steps):
+            # Run simulation step with optional force caching
+            if use_force_cache:
+                cached_forces = self.update(cached_forces)
+            else:
+                self.update()
+            
+            # Store state
+            state = self.get_state(fields)
+            state['step'] = step
+            trajectory.append(state)
+            
+            # Optional callback for progress reporting
+            if callback:
+                callback(step, state)
+        
+        return trajectory
 
-def plot(width, height, n_particles, power_law, G, dt, frames, interval):
-    """Single plot for testing a specific gravity law."""
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    
-    # Create simulation with desired parameters
-    sim = GravitySimulation(width=width, 
-                            height=height, 
-                            n_particles=n_particles,
-                            power_law=power_law, 
-                            G=G, 
-                            dt=dt
-    )
-    sim.use_mond = False
-    
-    # Set up the plot
-    ax.set_xlim(0, width)
-    ax.set_ylim(0, height)
-    ax.set_aspect('equal')
-    ax.set_facecolor('black')
-    ax.set_title('Newtonian Gravity (F ~ 1/r)', color='white', fontsize=14)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    
-    scatter = ax.scatter([], [], c='white', s=[], edgecolors='gray')
-    
-    def init():
-        return scatter,
-    
-    def animate(frame):
-        sim.update()
-        scatter.set_offsets(sim.positions[sim.active])
-        scatter.set_sizes(20 * np.sqrt(sim.masses[sim.active]))
-        return scatter,
-    
-    anim = FuncAnimation(fig, animate, init_func=init,
-                        frames=frames, interval=interval, blit=True)
-    
-    plt.tight_layout()
-    plt.show()
-    
-    return sim, anim
-
-
-# Example usage
-if __name__ == "__main__":
-    sim, anim = plot(width=800, 
-                     height=600, 
-                     n_particles=100, 
-                     power_law=-1.0, 
-                     G=35, 
-                     dt=0.01, 
-                     frames=100, 
-                     interval=10)

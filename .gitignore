@@ -3,3 +3,5 @@ __pycache__
 *.egg-info
 build
 venv
+benchmark_nbody.py
+nbody_benchmark_results.png
