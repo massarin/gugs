@@ -301,8 +301,8 @@ class GUGS:
         n_frames = len(frames_to_write)
         print(f"Generating GIF with {n_frames} frames using PIL...")
         
-        # Use imageio with PIL rendering
-        with imageio.get_writer(filename, mode='I', fps=self.fps) as writer:
+        # Use imageio with PIL rendering, loop=0 for infinite loop
+        with imageio.get_writer(filename, mode='I', fps=self.fps, loop=0) as writer:
             for i, state in enumerate(frames_to_write):
                 # Render frame with PIL
                 img = self.render_frame_pil(state['positions'], state['masses'])
