@@ -3,7 +3,7 @@
 Create animated GIFs with particles forming text that evolve under gravitational forces.
 
 ```bash
-gugs massarin
+gugs massarin --reverse
 ```
 
 ![massarin.gif](massarin.gif)
