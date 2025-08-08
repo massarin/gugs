@@ -18,7 +18,9 @@ class GUGS:
                  dt=0.005,
                  simulation_speed=1.0,
                  gif_duration=10.0,
-                 fps=30):
+                 fps=30,
+                 reverse=False,
+                 reverse_duration=5.0):
         """
         Initialize GUGS.
         
@@ -42,6 +44,8 @@ class GUGS:
         self.simulation_speed = simulation_speed
         self.gif_duration = gif_duration
         self.fps = fps
+        self.reverse = reverse
+        self.reverse_duration = reverse_duration
         
         # Generate initial positions from text pattern
         positions = self._create_exact_text_pattern(text, fill_rate)
@@ -57,7 +61,9 @@ class GUGS:
             softening=softening,
             dt=dt * simulation_speed,  # Apply simulation speed to time step
             positions=positions,
-            velocities=np.zeros((n_particles, 2)),  # Start with zero velocity
+            velocities=np.random.normal(loc=0.0, 
+                                        scale=0.5 * (self.w + self.h)/200, 
+                                        size=(n_particles, 2)),
             masses=np.random.normal(loc=1.0, 
                                     scale=0.2, 
                                     size=n_particles),
@@ -139,6 +145,47 @@ class GUGS:
         positions = pixel_positions[:, [1, 0]].astype(np.float32)
         
         return positions
+    
+    def _create_reverse_frames(self, trajectory):
+        """Create reverse frames with accelerating speed.
+        
+        The reverse playback starts slow and accelerates exponentially.
+        """
+        # Total frames for reverse playback at target fps
+        reverse_frame_count = int(self.reverse_duration * self.fps)
+        
+        # We'll sample from the forward trajectory with increasing gaps
+        # Use exponential acceleration: frame_index = exp(t) - 1
+        forward_frames = len(trajectory)
+        
+        # Slow down the last few frames of forward playback first
+        # Add 5 frames that repeat the last frame with slight variations
+        slowdown_frames = []
+        last_frame = trajectory[-1]
+        for _ in range(5):
+            slowdown_frames.append(last_frame)
+        
+        # Now create the reverse frames with acceleration
+        reverse_frames = []
+        
+        # We want to map reverse_frame_count frames to the trajectory
+        # Using an exponential curve for sampling
+        for i in range(reverse_frame_count):
+            # Progress from 0 to 1
+            progress = i / max(1, reverse_frame_count - 1)
+            
+            # Use exponential curve: starts slow, accelerates
+            # Map progress exponentially from end to beginning
+            exp_progress = (np.exp(progress * 3) - 1) / (np.exp(3) - 1)
+            
+            # Map to trajectory index (reversed)
+            traj_index = int((1 - exp_progress) * (forward_frames - 1))
+            traj_index = max(0, min(forward_frames - 1, traj_index))
+            
+            reverse_frames.append(trajectory[traj_index])
+        
+        # Combine slowdown and reverse
+        return slowdown_frames + reverse_frames
     
     def _create_fallback_pattern(self) -> np.ndarray:
         """Create a fallback pattern if text rendering fails"""
@@ -244,12 +291,19 @@ class GUGS:
         - trajectory: List of states from pre_simulate_trajectory
         - filename: Output filename
         """
-        n_frames = len(trajectory)
+        frames_to_write = trajectory.copy()
+        
+        if self.reverse:
+            # Add reverse playback with accelerating speed
+            reverse_frames = self._create_reverse_frames(trajectory)
+            frames_to_write.extend(reverse_frames)
+        
+        n_frames = len(frames_to_write)
         print(f"Generating GIF with {n_frames} frames using PIL...")
         
         # Use imageio with PIL rendering
         with imageio.get_writer(filename, mode='I', fps=self.fps) as writer:
-            for i, state in enumerate(trajectory):
+            for i, state in enumerate(frames_to_write):
                 # Render frame with PIL
                 img = self.render_frame_pil(state['positions'], state['masses'])
                 writer.append_data(np.array(img))

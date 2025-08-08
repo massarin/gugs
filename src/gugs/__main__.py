@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--simulation-speed", type=float, default=2.0, help="Simulation speed multiplier (default: 2.0)")
     parser.add_argument("--gif-duration", type=float, default=20.0, help="Duration of GIF in seconds (default: 20.0)")
     parser.add_argument("--fps", type=int, default=10, help="Frames per second (default: 10)")
+    parser.add_argument("--reverse", action="store_true", help="Add reverse playback with accelerating speed at the end")
+    parser.add_argument("--reverse-duration", type=float, default=5.0, help="Duration of reverse playback in seconds (default: 5.0)")
     parser.add_argument("--output", "-o", type=str, default="gugs.gif", help="Output filename (default: gugs.gif)")
     
     args = parser.parse_args()
@@ -30,7 +32,9 @@ def main():
         dt=args.dt,
         simulation_speed=args.simulation_speed,
         gif_duration=args.gif_duration,
-        fps=args.fps
+        fps=args.fps,
+        reverse=args.reverse,
+        reverse_duration=args.reverse_duration
     )
     
     # Generate GIF
