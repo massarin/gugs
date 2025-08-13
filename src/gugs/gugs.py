@@ -285,7 +285,7 @@ class GUGS:
         return trajectory
     
     def generate_gif_from_trajectory(self, trajectory, filename="simulation.gif"):
-        """Generate GIF from pre-computed trajectory.
+        """Generate GIF from pre-computed trajectory using mimsave.
         
         Parameters:
         - trajectory: List of states from pre_simulate_trajectory
@@ -294,23 +294,23 @@ class GUGS:
         frames_to_write = trajectory.copy()
         
         if self.reverse:
-            # Add reverse playback with accelerating speed
             reverse_frames = self._create_reverse_frames(trajectory)
             frames_to_write.extend(reverse_frames)
         
         n_frames = len(frames_to_write)
-        print(f"Generating GIF with {n_frames} frames using PIL...")
+        print(f"Generating GIF with {n_frames} frames using mimsave...")
         
-        # Use imageio with PIL rendering, loop=0 for infinite loop
-        with imageio.get_writer(filename, mode='I', fps=self.fps, loop=0) as writer:
-            for i, state in enumerate(frames_to_write):
-                # Render frame with PIL
-                img = self.render_frame_pil(state['positions'], state['masses'])
-                writer.append_data(np.array(img))
-                
-                if i % 10 == 0:
-                    print(f"Rendered frame {i}/{n_frames}")
+        # Render all frames first
+        images = []
+        for i, state in enumerate(frames_to_write):
+            img = self.render_frame_pil(state['positions'], state['masses'])
+            images.append(np.array(img))
+            
+            if i % 10 == 0:
+                print(f"Rendered frame {i}/{n_frames}")
         
+        # Use mimsave with loop=0 for infinite looping
+        imageio.mimsave(filename, images, fps=self.fps, loop=0)
         print(f"GIF saved to {filename}!")
     
     def generate_gif(self, filename="simulation.gif"):
