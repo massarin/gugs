@@ -27,6 +27,7 @@ gugs <username>
 ```
 
 ## Dependencies
-- numpy >= 1.21.0
-- matplotlib >= 3.4.0
-- pillow >= 8.2.0
+- numpy
+- imageio
+- pillow
+- numba
