@@ -27,4 +27,4 @@ packages = ["gugs"]
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-gugs = ["../liberation-mono/*.ttf"]
+gugs = ["fonts/*.ttf"]
