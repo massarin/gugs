@@ -1,8 +1,23 @@
+
+import pkg_resources
+from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import imageio
 from .sim import Sim
 
+def get_font_path():
+    """Get the path to the Liberation Mono font file."""
+    try:
+        # Try to get font from package resources
+        font_path = pkg_resources.resource_filename('gugs', 'fonts/LiberationMono-Regular.ttf')
+        if Path(font_path).exists():
+            return font_path
+    except:
+        pass
+    
+    # Fallback to system fonts or raise error
+    raise FileNotFoundError("Liberation Mono font not found in package")
 
 class GUGS:
     def __init__(self, 
@@ -89,9 +104,7 @@ class GUGS:
         font_size = int(desired_text_width / (len(username) * char_width_ratio))
         
         # Use Liberation Mono font from repo
-        import os
-        package_dir = os.path.dirname(os.path.abspath(__file__))
-        font_path = os.path.join(package_dir, "..", "..", "liberation-mono", "LiberationMono-Regular.ttf")
+        font_path = get_font_path()
         font = ImageFont.truetype(font_path, font_size)
         bbox = draw.textbbox((0, 0), username, font=font)
         text_width = bbox[2] - bbox[0]
